@@ -1,0 +1,16 @@
+{
+  "name": "my-cricket",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MY CRICKET: two-player 3D cricket in the browser for people on the same wifi. Build an XI of real players, toss, umpire decisions with DRS. Zero npm dependencies.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/engine.test.js test/e2e.test.js",
+    "check:browser": "node test/browser-check.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

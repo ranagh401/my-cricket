@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>render-a preview</title>
+<style>
+  html, body { margin: 0; background: #101418; color: #dfe6ee; font-family: system-ui, "Segoe UI", Arial, sans-serif; min-height: 100%; }
+  #wrap { display: flex; flex-direction: column; align-items: center; }
+  #stage { position: relative; background: #000; line-height: 0; }
+  #field { display: block; }
+  #fps { position: fixed; left: 6px; top: 6px; font: 12px/1.3 ui-monospace, Menlo, Consolas, monospace; color: #9fe0ff; background: rgba(0,0,0,.65); padding: 4px 7px; border-radius: 4px; z-index: 9; pointer-events: none; white-space: pre; }
+  #panel { width: 100%; max-width: 980px; padding: 10px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 8px; }
+  #panel fieldset { border: 1px solid #2a3340; border-radius: 8px; padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin: 0; }
+  #panel legend { font-size: 12px; color: #9fb0c8; padding: 0 4px; }
+  button { font: 13px system-ui, sans-serif; padding: 6px 9px; border-radius: 6px; border: 1px solid #334; background: #1b2430; color: #e6edf5; cursor: pointer; }
+  button:hover { background: #263243; }
+  label { font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
+  #err { white-space: pre-wrap; color: #ff8a80; font: 12px ui-monospace, Consolas, monospace; padding: 0 10px; max-width: 980px; margin: 4px 0; }
+  .hint { font-size: 12px; color: #9fb0c8; padding: 0 10px 12px; max-width: 980px; }
+</style>
+</head>
+<body>
+<div id="fps"></div>
+<div id="wrap">
+  <div id="stage"><canvas id="field" width="480" height="640" aria-label="MY CRICKET 3D preview"></canvas></div>
+  <pre id="err"></pre>
+  <div id="panel"></div>
+  <div class="hint">Automated frames: <code>?scene=NAME&amp;t=MS</code> with NAME one of idle, runup, flight, flight-spin, shot-four, shot-six, bowled, lbw-pending, decision-out, review-lbw, review-caught, caught, wide, lefty, follow. Optional <code>&amp;shadows=1</code> forces shadows, <code>&amp;hand=L</code> a left-hander.</div>
+</div>
+<script>
+  window.onerror = function (msg, src, line, col, err) {
+    var text = String(msg) + ' @ ' + (src || '') + ':' + line + ':' + col + (err && err.stack ? '\n' + err.stack : '');
+    document.title = 'ERROR: ' + String(msg);
+    var e = document.getElementById('err'); if (e) e.textContent += text + '\n';
+  };
+  window.addEventListener('unhandledrejection', function (ev) {
+    var r = ev.reason; window.onerror(String(r && r.message ? r.message : r), '', 0, 0, r);
+  });
+</script>
+<script type="module" src="render-a.js"></script>
+<script>
+(function () {
+  'use strict';
+  const params = new URLSearchParams(location.search);
+  const sceneName = params.get('scene'), tParam = params.get('t'), shadowsParam = params.get('shadows');
+  let hand = params.get('hand') === 'L' ? 'L' : 'R';
+  const canvas = document.getElementById('field'), stage = document.getElementById('stage'), fpsEl = document.getElementById('fps'), panel = document.getElementById('panel');
+
+  // Size: at most 480x640, always 3:4, letterboxed inside the viewport.
+  function fit() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let w = Math.min(480, vw), h = (w * 4) / 3;
+    if (h > vh) { h = Math.min(vh, 640); w = (h * 3) / 4; }
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    stage.style.width = w + 'px'; stage.style.height = h + 'px';
+  }
+  fit();
+  window.addEventListener('resize', fit);
+
+  const SAMPLE_MATCH = { teams: [
+    { name: 'Blue Kings', short: 'BLU', color: '#1b3f8f', color2: '#f0c330' },
+    { name: 'Green Hawks', short: 'GRN', color: '#1f5c2e', color2: '#f4e04d' },
+  ] };
+  const sampleScene = (h, type) => ({ battingSlot: 0, bowlingSlot: 1, striker: { name: 'R. Sharma', hand: h }, nonStriker: { name: 'K. Rahul', hand: 'R' }, bowler: { name: type === 'spin' ? 'R. Jadeja' : 'M. Starc', type: type || 'fast' } });
+  const fastEv = (o) => Object.assign({ lineIndex: 1, turn: 0, length: 'good', pace: 'fast', flightMs: 950, lead: 1100, bowlerType: 'fast' }, o || {});
+  const slowEv = (o) => Object.assign({ lineIndex: 1, turn: 0, length: 'full', pace: 'slower', flightMs: 1350, lead: 1100, bowlerType: 'medium' }, o || {});
+  const spinEv = (o) => Object.assign({ lineIndex: 2, turn: -1, length: 'good', pace: 'spin', flightMs: 1350, lead: 1100, bowlerType: 'spin' }, o || {});
+  const res = (o) => Object.assign({ type: 'runs', runs: 0, wicketKind: null, contact: true, wide: false, shot: { dir: 'straight', kind: 'attack', timing: 'good' },
+    ball: { lineIndex: 1, turn: 0, length: 'good', pace: 'fast', wide: false }, fielderZone: null, commentary: '', decisionPending: false }, o || {});
+  const lbwPending = () => res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: { dir: 'leg', kind: 'attack', timing: 'poor' }, decisionPending: true, commentary: 'Huge appeal for lbw!' });
+  const caughtRes = (zone, kind, pending) => res({ type: 'wicket', wicketKind: 'caught', fielderZone: zone, shot: { dir: zone === 'keeper' ? 'off' : zone, kind: kind || 'attack', timing: 'ok' }, decisionPending: !!pending, commentary: 'CAUGHT! Taken at ' + zone });
+  const lbwReview = (over) => Object.assign({ kind: 'lbw', pitching: 'inline', impact: 'inline', wickets: 'hitting', ultraEdge: null, verdict: 'out', overturned: false, decision: 'out', durationMs: 8000 }, over || {});
+  const caughtReview = (over) => Object.assign({ kind: 'caught', pitching: null, impact: null, wickets: null, ultraEdge: true, verdict: 'out', overturned: true, decision: 'out', durationMs: 8000 }, over || {});
+
+  // Scenes: steps at times relative to the scene origin (negative = already happened). A frozen frame
+  // replays every step at or before t with a fake clock and draws once; live mode schedules them.
+  const SCENES = {
+    idle: { t: 0, steps: [[0, (r, t) => r.idle()]] },
+    runup: { t: 600, steps: [[0, (r, t) => r.startDelivery(fastEv(), t + 1100)]] },
+    flight: { t: 700, steps: [[-1100, (r, t) => r.startDelivery(fastEv(), t + 1100)]] },
+    'flight-spin': { t: 1100, steps: [[-1100, (r, t) => r.startDelivery(spinEv(), t + 1100)]] },
+    'shot-four': { t: 600, steps: [[-2050, (r, t) => r.startDelivery(fastEv(), t + 1100)], [0, (r, t) => { r.swing('off', t); r.startResult(res({ runs: 4, shot: { dir: 'off', kind: 'attack', timing: 'perfect' }, commentary: 'FOUR! Crisp through the covers.' }), t); r.celebrate('four', t); }]] },
+    'shot-six': { t: 500, steps: [[-2050, (r, t) => r.startDelivery(fastEv({ length: 'full' }), t + 1100)], [0, (r, t) => { r.swing('leg', t); r.startResult(res({ runs: 6, shot: { dir: 'leg', kind: 'loft', timing: 'perfect' }, commentary: 'SIX! Launched over midwicket!' }), t); r.celebrate('six', t); }]] },
+    bowled: { t: 600, steps: [[-2050, (r, t) => r.startDelivery(fastEv(), t + 1100)], [0, (r, t) => { r.swing('off', t); r.startResult(res({ type: 'wicket', wicketKind: 'bowled', contact: false, shot: { dir: 'off', kind: 'attack', timing: 'poor' }, commentary: 'BOWLED! Through the gate!' }), t); }]] },
+    'lbw-pending': { t: 800, steps: [[-2050, (r, t) => r.startDelivery(fastEv({ length: 'full' }), t + 1100)], [0, (r, t) => r.startResult(lbwPending(), t)]] },
+    'decision-out': { t: 400, steps: [[-3550, (r, t) => r.startDelivery(fastEv({ length: 'full' }), t + 1100)], [-1500, (r, t) => r.startResult(lbwPending(), t)], [0, (r, t) => r.showDecision('out', t)]] },
+    'review-lbw': { t: 2500, steps: [[-5050, (r, t) => r.startDelivery(fastEv({ length: 'full' }), t + 1100)], [-3000, (r, t) => r.startResult(lbwPending(), t)], [-1800, (r, t) => r.showDecision('out', t)], [0, (r, t) => r.startReview(lbwReview(), t)]] },
+    'review-caught': { t: 3000, steps: [[-5050, (r, t) => r.startDelivery(fastEv(), t + 1100)], [-3000, (r, t) => { r.swing('off', t); r.startResult(caughtRes('keeper', 'attack', true), t); }], [-1800, (r, t) => r.showDecision('notout', t)], [0, (r, t) => r.startReview(caughtReview(), t)]] },
+    caught: { t: 500, steps: [[-2050, (r, t) => r.startDelivery(fastEv(), t + 1100)], [0, (r, t) => { r.swing('off', t); r.startResult(caughtRes('off', 'attack', false), t); }]] },
+    wide: { t: 900, steps: [[-1100, (r, t) => r.startDelivery(fastEv({ lineIndex: -1 }), t + 1100)], [950, (r, t) => r.startResult(res({ runs: 1, wide: true, shot: null, ball: { lineIndex: -1, turn: 0, length: 'good', pace: 'fast', wide: true }, commentary: 'Wide down the leg side.' }), t)]] },
+    lefty: { t: 0, steps: [[0, (r, t) => { r.setScene(sampleScene('L', 'fast')); r.idle(); }]] },
+    follow: { t: 800, steps: [[-2050, (r, t) => r.startDelivery(fastEv(), t + 1100)], [0, (r, t) => { r.swing('straight', t); r.startResult(res({ runs: 4, shot: { dir: 'straight', kind: 'attack', timing: 'perfect' }, commentary: 'FOUR! Straight down the ground.' }), t); }]] },
+  };
+
+  let renderer = null, timers = [];
+  function runSteps(scene, base, frozenT) {
+    const steps = scene.steps.slice().sort((a, b) => a[0] - b[0]);
+    for (const [at, fn] of steps) {
+      if (frozenT != null) { if (at <= frozenT) fn(renderer, base + at); }
+      else if (at <= 0) fn(renderer, base + at);
+      else timers.push(setTimeout(() => fn(renderer, performance.now()), at));
+    }
+  }
+  function clearTimers() { for (const id of timers) clearTimeout(id); timers = []; }
+
+  function boot() {
+    const opts = shadowsParam === '1' ? { shadows: true } : shadowsParam === '0' ? { shadows: false } : {};
+    const camParam = params.get('cam');                 // debugging aid: cam=x,y,z,tx,ty,tz,fov forces a fixed camera
+    if (camParam) { const c = camParam.split(',').map(Number); if (c.length >= 6) opts.debugCamera = { pos: c.slice(0, 3), target: c.slice(3, 6), fov: c[6] || 40 }; }
+    renderer = window.Renderer(canvas, opts);
+    renderer.setMatch(SAMPLE_MATCH);
+    renderer.setScene(sampleScene(hand, 'fast'));
+    if (sceneName) {
+      const scene = SCENES[sceneName] || SCENES.idle;
+      const t = tParam != null && tParam !== '' ? Number(tParam) : scene.t;
+      renderer.resize();
+      runSteps(scene, 0, t);
+      renderer.draw(t);
+      if (document.title.indexOf('ERROR') !== 0) document.title = 'preview-a ' + sceneName + ' ok';
+      fpsEl.textContent = 'frozen ' + sceneName + ' @ ' + t + ' ms';
+      return;
+    }
+    buildPanel();
+    let frames = 0, acc = 0, worst = 0, lastReport = performance.now(), fpsCount = 0;
+    (function loop() {
+      const now = performance.now();
+      const a = performance.now();
+      renderer.draw(now);
+      const d = performance.now() - a;
+      acc += d; worst = Math.max(worst, d); frames++; fpsCount++;
+      if (now - lastReport > 1000) {
+        fpsEl.textContent = 'draw avg ' + (acc / Math.max(1, frames)).toFixed(2) + ' ms  max ' + worst.toFixed(2) + ' ms\n' + fpsCount + ' fps';
+        frames = 0; acc = 0; worst = 0; fpsCount = 0; lastReport = now;
+      }
+      requestAnimationFrame(loop);
+    })();
+  }
+
+  function buildPanel() {
+    const group = (title, items) => {
+      const fs = document.createElement('fieldset'); const lg = document.createElement('legend'); lg.textContent = title; fs.appendChild(lg);
+      for (const [label, fn] of items) { const b = document.createElement('button'); b.textContent = label; b.addEventListener('click', () => { clearTimers(); fn(performance.now()); }); fs.appendChild(b); }
+      panel.appendChild(fs); return fs;
+    };
+    const r = () => renderer;
+    const deliverThen = (ev, after) => (now) => { r().startDelivery(ev, now + 1100); if (after) timers.push(setTimeout(() => after(performance.now()), 1100 + (ev.flightMs || 950))); };
+    const shotThen = (dir, kind, outcome) => deliverThen(fastEv(), (t) => { r().swing(dir, t); r().startResult(res(Object.assign({ shot: { dir, kind, timing: 'good' } }, outcome)), t); });
+    group('Delivery', [
+      ['Fast', deliverThen(fastEv())], ['Slower ball', deliverThen(slowEv())], ['Spin (turns)', (now) => { r().setScene(sampleScene(hand, 'spin')); deliverThen(spinEv())(now); }],
+      ['Short ball', deliverThen(fastEv({ length: 'short' }))], ['Wide down leg', deliverThen(fastEv({ lineIndex: -1 }), (t) => r().startResult(res({ runs: 1, wide: true, shot: null }), t))],
+      ['Wide outside off', deliverThen(fastEv({ lineIndex: 3 }), (t) => r().startResult(res({ runs: 1, wide: true, shot: null }), t))],
+    ]);
+    group('Shots (fast ball, result: dot/1)', [
+      ['Leg defend', shotThen('leg', 'defend', { runs: 0 })], ['Straight defend', shotThen('straight', 'defend', { runs: 0 })], ['Off defend', shotThen('off', 'defend', { runs: 0 })],
+      ['Leg attack', shotThen('leg', 'attack', { runs: 1 })], ['Straight attack', shotThen('straight', 'attack', { runs: 1 })], ['Off attack', shotThen('off', 'attack', { runs: 1 })],
+      ['Leg loft', shotThen('leg', 'loft', { runs: 2 })], ['Straight loft', shotThen('straight', 'loft', { runs: 2 })], ['Off loft', shotThen('off', 'loft', { runs: 2 })],
+      ['Swing only (local press)', (now) => r().swing('leg', now)],
+    ]);
+    group('Outcomes', [
+      ['Dot (contact)', shotThen('straight', 'defend', { runs: 0 })], ['Dot (miss)', deliverThen(fastEv(), (t) => r().startResult(res({ runs: 0, contact: false, shot: { dir: 'off', kind: 'attack', timing: 'poor' } }), t))],
+      ['Leave', deliverThen(fastEv({ lineIndex: 3 }), (t) => r().startResult(res({ runs: 0, contact: false, shot: null }), t))],
+      ['1 run', shotThen('leg', 'attack', { runs: 1 })], ['2 runs', shotThen('off', 'attack', { runs: 2 })], ['3 runs', shotThen('straight', 'attack', { runs: 3 })],
+      ['FOUR', shotThen('off', 'attack', { runs: 4 })], ['FOUR (loft)', shotThen('straight', 'loft', { runs: 4 })], ['SIX', (now) => { shotThen('leg', 'loft', { runs: 6 })(now); timers.push(setTimeout(() => r().celebrate('six', performance.now()), 2100)); }],
+      ['Bowled', deliverThen(fastEv(), (t) => { r().swing('off', t); r().startResult(res({ type: 'wicket', wicketKind: 'bowled', contact: false, shot: { dir: 'off', kind: 'attack', timing: 'poor' } }), t); })],
+      ['LBW pending -> OUT', deliverThen(fastEv({ length: 'full' }), (t) => { r().startResult(lbwPending(), t); timers.push(setTimeout(() => r().showDecision('out', performance.now()), 2200)); })],
+      ['LBW pending -> NOT OUT', deliverThen(fastEv({ length: 'full' }), (t) => { r().startResult(lbwPending(), t); timers.push(setTimeout(() => r().showDecision('notout', performance.now()), 2200)); })],
+      ['LBW (no review)', deliverThen(fastEv({ length: 'full' }), (t) => r().startResult(Object.assign(lbwPending(), { decisionPending: false }), t))],
+      ['Caught leg', deliverThen(fastEv(), (t) => { r().swing('leg', t); r().startResult(caughtRes('leg', 'loft'), t); })],
+      ['Caught straight', deliverThen(fastEv(), (t) => { r().swing('straight', t); r().startResult(caughtRes('straight', 'loft'), t); })],
+      ['Caught off', deliverThen(fastEv(), (t) => { r().swing('off', t); r().startResult(caughtRes('off', 'attack'), t); })],
+      ['Caught keeper (pending)', deliverThen(fastEv(), (t) => { r().swing('off', t); r().startResult(caughtRes('keeper', 'attack', true), t); timers.push(setTimeout(() => r().showDecision('out', performance.now()), 2400)); })],
+    ]);
+    group('Umpire signals', [['Four', (n) => r().signal('four', n)], ['Six', (n) => r().signal('six', n)], ['Wide', (n) => r().signal('wide', n)], ['No ball', (n) => r().signal('noball', n)], ['Out', (n) => r().signal('out', n)], ['Not out', (n) => r().signal('notout', n)],
+      ['Decision OUT', (n) => r().showDecision('out', n)], ['Decision NOT OUT', (n) => r().showDecision('notout', n)]]);
+    group('DRS reviews (8 s)', [
+      ['LBW: upheld (out)', (n) => r().startReview(lbwReview(), n)],
+      ['LBW: overturned (not out, missing)', (n) => r().startReview(lbwReview({ wickets: 'missing', verdict: 'notout', overturned: true, decision: 'notout' }), n)],
+      ["LBW: umpire's call", (n) => r().startReview(lbwReview({ wickets: 'umpires-call', verdict: 'out', overturned: false, decision: 'out' }), n)],
+      ['LBW: pitched outside leg', (n) => r().startReview(lbwReview({ pitching: 'outside-leg', impact: 'inline', wickets: 'hitting', verdict: 'notout', overturned: true, decision: 'notout' }), n)],
+      ['Caught: edge (overturned to out)', (n) => r().startReview(caughtReview(), n)],
+      ['Caught: no edge (stands, not out)', (n) => r().startReview(caughtReview({ ultraEdge: false, verdict: 'notout', overturned: false, decision: 'notout' }), n)],
+    ]);
+    group('Celebrations', [['Six', (n) => r().celebrate('six', n)], ['Four', (n) => r().celebrate('four', n)], ['Wicket', (n) => r().celebrate('wicket', n)], ['Win', (n) => r().celebrate('win', n)]]);
+    const misc = group('Misc', [['Idle / reset', () => r().idle()], ['Rematch colours (swap)', () => r().setMatch({ teams: [SAMPLE_MATCH.teams[1], SAMPLE_MATCH.teams[0]] })]]);
+    const lab = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = hand === 'L';
+    cb.addEventListener('change', () => { hand = cb.checked ? 'L' : 'R'; r().setScene(sampleScene(hand, 'fast')); });
+    lab.appendChild(cb); lab.appendChild(document.createTextNode('Left-handed striker')); misc.appendChild(lab);
+  }
+
+  if (window.Renderer) boot(); else window.addEventListener('renderer-ready', boot, { once: true });
+})();
+</script>
+</body>
+</html>

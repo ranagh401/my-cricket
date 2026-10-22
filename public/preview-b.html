@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MY CRICKET - renderer B preview</title>
+<style>
+  html, body { margin: 0; background: #05070f; color: #e5e7eb; font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px; }
+  .stage { position: relative; background: #000; line-height: 0; }
+  canvas { display: block; }
+  #fps { position: absolute; left: 6px; top: 6px; z-index: 9; font: 12px/1.3 monospace; color: #9fe; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
+  #err { color: #f87171; white-space: pre-wrap; max-width: 480px; font: 12px monospace; margin: 0; }
+  #panel { max-width: 640px; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+  #panel button { font: 12px/1.2 inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #e5e7eb; cursor: pointer; }
+  #panel button:active { background: #475569; }
+  #panel h4 { width: 100%; margin: 6px 0 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #94a3b8; }
+  #panel label { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="stage" id="stage">
+    <canvas id="field" width="480" height="640" aria-label="Cricket field"></canvas>
+    <div id="fps"></div>
+  </div>
+  <pre id="err"></pre>
+  <div id="panel"></div>
+</div>
+<script>
+  window.__errors = [];
+  window.onerror = function (msg, src, line, col, err) {
+    var text = 'ERROR: ' + msg + ' (' + (src || '') + ':' + line + ':' + col + ')' + (err && err.stack ? '\n' + err.stack : '');
+    window.__errors.push(text);
+    document.title = text;
+    document.getElementById('err').textContent += text + '\n';
+  };
+  window.addEventListener('unhandledrejection', function (e) { window.onerror(String(e.reason && e.reason.stack || e.reason), '', 0, 0, null); });
+</script>
+<script>
+(function () {
+  'use strict';
+  var params = new URLSearchParams(location.search);
+  var sceneName = params.get('scene');
+  var frozenT = params.get('t') != null ? +params.get('t') : null;
+  var camParam = params.get('cam');
+  var canvas = document.getElementById('field');
+  var fpsEl = document.getElementById('fps');
+  var BASE = 100000;
+
+  function fit() {
+    if (sceneName) {                      // frozen screenshot mode: exactly 480x640 at the page origin
+      document.getElementById('wrap').style.padding = '0';
+      canvas.style.width = '480px'; canvas.style.height = '640px';
+      return;
+    }
+    var vw = window.innerWidth - 16, vh = window.innerHeight - 16;
+    var w = Math.min(480, vw, Math.floor(vh * 0.75)); if (w < 120) w = 120;
+    var h = Math.round(w * 4 / 3);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  }
+  fit(); window.addEventListener('resize', fit);
+
+  var TEAMS = [
+    { name: 'Mumbai Thunder', short: 'MUM', color: '#1d4ed8', color2: '#facc15' },
+    { name: 'Chennai Blaze', short: 'CHE', color: '#f59e0b', color2: '#111827' },
+  ];
+  var sceneR = { battingSlot: 0, bowlingSlot: 1, striker: { name: 'R Sharma', hand: 'R' }, nonStriker: { name: 'V Kohli', hand: 'R' }, bowler: { name: 'J Bumrah', type: 'fast' } };
+  var sceneL = { battingSlot: 0, bowlingSlot: 1, striker: { name: 'S Dhawan', hand: 'L' }, nonStriker: { name: 'V Kohli', hand: 'R' }, bowler: { name: 'J Bumrah', type: 'fast' } };
+  var sceneSpin = { battingSlot: 0, bowlingSlot: 1, striker: { name: 'R Sharma', hand: 'R' }, nonStriker: { name: 'V Kohli', hand: 'R' }, bowler: { name: 'R Jadeja', type: 'spin' } };
+
+  function del(o) { return Object.assign({ lineIndex: 1, turn: 0, length: 'good', pace: 'fast', flightMs: 800, lead: 1100, bowlerType: 'fast' }, o || {}); }
+  function res(o) {
+    return Object.assign({ type: 'runs', runs: 0, wicketKind: null, contact: true, wide: false, shot: { dir: 'straight', kind: 'attack', timing: 'good' },
+      ball: { lineIndex: 1, turn: 0, length: 'good', pace: 'fast', wide: false }, fielderZone: null, commentary: 'preview', decisionPending: false }, o || {});
+  }
+  var FAST = del(), SPIN = del({ pace: 'spin', bowlerType: 'spin', turn: 1, lineIndex: 2, flightMs: 1300, length: 'good' });
+
+  // Scenes: steps [offsetMs, fn(renderer, now)] applied in order while offset <= t, with now = BASE + offset.
+  var SCENES = {
+    'idle': { steps: [] },
+    'runup': { steps: [[0, function (r, n) { r.startDelivery(FAST, n + 1100); }]] },
+    'flight': { steps: [[0, function (r, n) { r.startDelivery(FAST, n); }]] },
+    'flight-spin': { scene: sceneSpin, steps: [[0, function (r, n) { r.startDelivery(SPIN, n); }]] },
+    'shot-four': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ runs: 4, shot: { dir: 'off', kind: 'attack', timing: 'perfect' }, commentary: 'Cracked through the covers for four' }), n); }]] },
+    'shot-six': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ runs: 6, shot: { dir: 'leg', kind: 'loft', timing: 'perfect' }, commentary: 'Launched over midwicket' }), n); }]] },
+    'bowled': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'bowled', contact: false, shot: null, commentary: 'Through the gate, bowled!' }), n); }]] },
+    'lbw-pending': { steps: [[-800, function (r, n) { r.startDelivery(del({ length: 'full', lineIndex: 1 }), n); }], [0, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true, commentary: 'Big appeal for lbw' }), n); }]] },
+    'decision-out': { steps: [[-3300, function (r, n) { r.startDelivery(del({ length: 'full' }), n); }], [-2500, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true, commentary: 'Big appeal for lbw' }), n); }], [0, function (r, n) { r.showDecision('out', n); }]] },
+    'review-lbw': { steps: [[-3800, function (r, n) { r.startDelivery(del({ length: 'full' }), n); }], [-3000, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true, commentary: 'Big appeal for lbw' }), n); }],
+      [0, function (r, n) { r.startReview({ kind: 'lbw', pitching: 'inline', impact: 'inline', wickets: 'umpires-call', ultraEdge: null, verdict: 'out', overturned: false, decision: 'out', durationMs: 7000 }, n); }]] },
+    'review-lbw-overturned': { steps: [[-3800, function (r, n) { r.startDelivery(del({ length: 'full' }), n); }], [-3000, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true, commentary: 'Big appeal for lbw' }), n); }],
+      [0, function (r, n) { r.startReview({ kind: 'lbw', pitching: 'outside-leg', impact: 'inline', wickets: 'hitting', ultraEdge: null, verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, n); }]] },
+    'review-caught': { steps: [[-3800, function (r, n) { r.startDelivery(FAST, n); }], [-3000, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'caught', fielderZone: 'keeper', decisionPending: true, shot: { dir: 'off', kind: 'attack', timing: 'poor' }, commentary: 'Did he nick it?' }), n); }],
+      [0, function (r, n) { r.startReview({ kind: 'caught', pitching: null, impact: null, wickets: null, ultraEdge: true, verdict: 'out', overturned: false, decision: 'out', durationMs: 7000 }, n); }]] },
+    'review-caught-overturned': { steps: [[-3800, function (r, n) { r.startDelivery(FAST, n); }], [-3000, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'caught', fielderZone: 'keeper', decisionPending: true, shot: { dir: 'off', kind: 'attack', timing: 'poor' }, commentary: 'Did he nick it?' }), n); }],
+      [0, function (r, n) { r.startReview({ kind: 'caught', pitching: null, impact: null, wickets: null, ultraEdge: false, verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, n); }]] },
+    'caught': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'caught', fielderZone: 'off', shot: { dir: 'off', kind: 'attack', timing: 'poor' }, commentary: 'Straight to cover' }), n); }]] },
+    'wide': { steps: [[-800, function (r, n) { r.startDelivery(del({ lineIndex: 3, length: 'good' }), n); }], [0, function (r, n) { r.startResult(res({ runs: 1, wide: true, contact: false, shot: null, ball: { lineIndex: 3, turn: 0, length: 'good', pace: 'fast', wide: true }, commentary: 'Way down the leg side, wide' }), n); }]] },
+    'lefty': { scene: sceneL, steps: [] },
+    'lefty-flight': { scene: sceneL, steps: [[0, function (r, n) { r.startDelivery(del({ lineIndex: 0 }), n); }]] },
+    'follow': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ runs: 4, shot: { dir: 'leg', kind: 'attack', timing: 'perfect' }, commentary: 'Whipped through midwicket' }), n); }]], defaultT: 1200 },
+    'runs-2': { steps: [[-800, function (r, n) { r.startDelivery(FAST, n); }], [0, function (r, n) { r.startResult(res({ runs: 2, shot: { dir: 'straight', kind: 'attack', timing: 'good' }, commentary: 'Driven down the ground, two' }), n); }]], defaultT: 1500 },
+    'celebrate-six': { steps: [[0, function (r, n) { r.celebrate('six', n); }]], defaultT: 900 },
+    'signal-six': { steps: [[0, function (r, n) { r.signal('six', n); }]], defaultT: 600 },
+    'decision-notout': { steps: [[-3300, function (r, n) { r.startDelivery(del({ length: 'full' }), n); }], [-2500, function (r, n) { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true, commentary: 'Big appeal for lbw' }), n); }], [0, function (r, n) { r.showDecision('notout', n); }]] },
+  };
+
+  var renderer = null, lastDrawMs = 0, drawAcc = 0, drawN = 0, fpsT = 0, frames = 0;
+
+  function runFrozen(name, t) {
+    var sc = SCENES[name] || SCENES.idle;
+    if (t == null) t = sc.defaultT != null ? sc.defaultT : 600;
+    renderer.setMatch({ teams: TEAMS });
+    renderer.setScene(sc.scene || sceneR);
+    renderer.idle();
+    sc.steps.forEach(function (st) { if (st[0] <= t) st[1](renderer, BASE + st[0]); });
+    renderer.draw(BASE + t);
+    // Headless screenshots do not always composite a WebGL canvas: draw the same deterministic
+    // frame again on the next animation frame and mirror it into an <img> under the overlay.
+    requestAnimationFrame(function () {
+      renderer.draw(BASE + t);
+      try {
+        var img = document.getElementById('snap') || document.createElement('img');
+        img.id = 'snap'; img.style.cssText = 'position:absolute;left:0;top:0;width:' + canvas.clientWidth + 'px;height:' + canvas.clientHeight + 'px;pointer-events:none;';
+        img.src = canvas.toDataURL('image/png');
+        if (!img.parentNode) canvas.parentNode.insertBefore(img, canvas.nextSibling);
+      } catch (e) { /* ignore */ }
+    });
+    var lum = -1;
+    try {
+      var c2 = document.createElement('canvas'); c2.width = 48; c2.height = 64;
+      var g2 = c2.getContext('2d'); g2.drawImage(canvas, 0, 0, 48, 64);
+      var px = g2.getImageData(0, 0, 48, 64).data, sum = 0;
+      for (var i = 0; i < px.length; i += 4) sum += px[i] + px[i + 1] + px[i + 2];
+      lum = Math.round(sum / (px.length / 4) / 3);
+    } catch (e) { lum = -2; }
+    document.title = 'preview-b ' + name + ' @' + t + ' lum=' + lum + ' vp=' + window.innerWidth + 'x' + window.innerHeight + ' css=' + canvas.clientWidth + 'x' + canvas.clientHeight + ' buf=' + canvas.width + 'x' + canvas.height + (window.__errors.length ? ' ' + window.__errors[0] : ' ok');
+  }
+
+  function live() {
+    var panel = document.getElementById('panel');
+    function h(t) { var e = document.createElement('h4'); e.textContent = t; panel.appendChild(e); }
+    function b(t, fn) { var e = document.createElement('button'); e.textContent = t; e.onclick = function () { fn(renderer, performance.now()); }; panel.appendChild(e); }
+    var now = function () { return performance.now(); };
+    var lefty = false, spin = false, kind = 'attack';
+    function scn() { var s = JSON.parse(JSON.stringify(lefty ? sceneL : sceneR)); if (spin) s.bowler = { name: 'R Jadeja', type: 'spin' }; return s; }
+    function dlv(o) { return del(Object.assign(spin ? { pace: 'spin', bowlerType: 'spin', flightMs: 1300, turn: 1, lineIndex: 2 } : {}, o || {})); }
+    h('Scene');
+    var lab = document.createElement('label'); lab.innerHTML = '<input type="checkbox" id="lefty"> left-handed striker'; panel.appendChild(lab);
+    lab.querySelector('input').onchange = function (e) { lefty = e.target.checked; renderer.setScene(scn()); };
+    var lab2 = document.createElement('label'); lab2.innerHTML = '<input type="checkbox" id="spin"> spinner'; panel.appendChild(lab2);
+    lab2.querySelector('input').onchange = function (e) { spin = e.target.checked; renderer.setScene(scn()); };
+    b('Idle', function (r) { r.idle(); });
+    h('Delivery');
+    b('Fast good middle', function (r, n) { r.startDelivery(dlv({ pace: 'fast', flightMs: 800 }), n + 1100); });
+    b('Slower full off', function (r, n) { r.startDelivery(dlv({ pace: 'slower', flightMs: 1000, length: 'full', lineIndex: 2 }), n + 1100); });
+    b('Short leg', function (r, n) { r.startDelivery(dlv({ length: 'short', lineIndex: 0 }), n + 1100); });
+    b('Spin turn +1', function (r, n) { r.startDelivery(del({ pace: 'spin', bowlerType: 'spin', turn: 1, lineIndex: 2, flightMs: 1300 }), n + 1100); });
+    b('Spin turn -1', function (r, n) { r.startDelivery(del({ pace: 'spin', bowlerType: 'spin', turn: -1, lineIndex: 0, flightMs: 1300 }), n + 1100); });
+    b('Wide outside off', function (r, n) { r.startDelivery(dlv({ lineIndex: 3 }), n + 1100); });
+    h('Shot (local swing)');
+    ['defend', 'attack', 'loft'].forEach(function (k) { b('kind: ' + k, function () { kind = k; }); });
+    ['leg', 'straight', 'off'].forEach(function (d) { b('swing ' + d, function (r, n) { r.swing(d, n); }); });
+    h('Outcome');
+    function outcome(label, o) { b(label, function (r, n) { r.startResult(res(Object.assign({ shot: { dir: o.dir || 'straight', kind: kind, timing: 'good' } }, o)), n); }); }
+    outcome('Dot (defended)', { runs: 0, dir: 'straight' });
+    outcome('Beaten', { runs: 0, contact: false, shot: null });
+    outcome('1 run leg', { runs: 1, dir: 'leg' }); outcome('2 runs straight', { runs: 2, dir: 'straight' }); outcome('3 runs off', { runs: 3, dir: 'off' });
+    outcome('FOUR off', { runs: 4, dir: 'off' }); outcome('FOUR leg', { runs: 4, dir: 'leg' }); outcome('SIX straight', { runs: 6, dir: 'straight' }); outcome('SIX leg', { runs: 6, dir: 'leg' });
+    outcome('Bowled', { type: 'wicket', wicketKind: 'bowled', contact: false, shot: null });
+    outcome('LBW (pending)', { type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true });
+    outcome('LBW (given)', { type: 'wicket', wicketKind: 'lbw', contact: false, shot: null });
+    outcome('Caught leg', { type: 'wicket', wicketKind: 'caught', fielderZone: 'leg', dir: 'leg' });
+    outcome('Caught straight', { type: 'wicket', wicketKind: 'caught', fielderZone: 'straight', dir: 'straight' });
+    outcome('Caught off', { type: 'wicket', wicketKind: 'caught', fielderZone: 'off', dir: 'off' });
+    outcome('Caught behind', { type: 'wicket', wicketKind: 'caught', fielderZone: 'keeper', dir: 'off' });
+    outcome('Caught behind (pending)', { type: 'wicket', wicketKind: 'caught', fielderZone: 'keeper', dir: 'off', decisionPending: true });
+    outcome('Wide', { runs: 1, wide: true, contact: false, shot: null });
+    h('Decision / signals');
+    b('Decision OUT', function (r, n) { r.showDecision('out', n); }); b('Decision NOT OUT', function (r, n) { r.showDecision('notout', n); });
+    ['four', 'six', 'wide', 'noball', 'out', 'notout'].forEach(function (k) { b('signal ' + k, function (r, n) { r.signal(k, n); }); });
+    h('Review');
+    b('LBW review: upheld (umpire\'s call)', function (r, n) { r.startReview({ kind: 'lbw', pitching: 'inline', impact: 'inline', wickets: 'umpires-call', verdict: 'out', overturned: false, decision: 'out', durationMs: 7000 }, n); });
+    b('LBW review: overturned (pitched outside leg)', function (r, n) { r.startReview({ kind: 'lbw', pitching: 'outside-leg', impact: 'inline', wickets: 'hitting', verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, n); });
+    b('LBW review: overturned (missing)', function (r, n) { r.startReview({ kind: 'lbw', pitching: 'inline', impact: 'inline', wickets: 'missing', verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, n); });
+    b('Caught review: spike, out stands', function (r, n) { r.startReview({ kind: 'caught', ultraEdge: true, verdict: 'out', overturned: false, decision: 'out', durationMs: 7000 }, n); });
+    b('Caught review: no spike, overturned', function (r, n) { r.startReview({ kind: 'caught', ultraEdge: false, verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, n); });
+    h('Celebrate');
+    ['four', 'six', 'wicket', 'win'].forEach(function (k) { b('celebrate ' + k, function (r, n) { r.celebrate(k, n); }); });
+    h('Sequences');
+    b('Full ball: fast, drive, FOUR', function (r, n) {
+      r.startDelivery(dlv({ flightMs: 800 }), n + 1100);
+      setTimeout(function () { r.swing('off', performance.now()); }, 1100 + 780);
+      setTimeout(function () { r.startResult(res({ runs: 4, shot: { dir: 'off', kind: 'attack', timing: 'perfect' } }), performance.now()); }, 1100 + 800);
+    });
+    b('Full ball: spin, bowled', function (r, n) {
+      r.startDelivery(del({ pace: 'spin', bowlerType: 'spin', turn: 1, lineIndex: 2, flightMs: 1300 }), n + 1100);
+      setTimeout(function () { r.startResult(res({ type: 'wicket', wicketKind: 'bowled', contact: false, shot: null }), performance.now()); }, 1100 + 1300);
+    });
+    b('Full ball: lbw, review, overturned', function (r, n) {
+      r.startDelivery(dlv({ length: 'full' }), n + 1100);
+      setTimeout(function () { r.startResult(res({ type: 'wicket', wicketKind: 'lbw', contact: false, shot: null, decisionPending: true }), performance.now()); }, 1900);
+      setTimeout(function () { r.showDecision('out', performance.now()); }, 4200);
+      setTimeout(function () { r.startReview({ kind: 'lbw', pitching: 'outside-leg', impact: 'inline', wickets: 'hitting', verdict: 'notout', overturned: true, decision: 'out', durationMs: 7000 }, performance.now()); }, 6500);
+    });
+
+    renderer.setMatch({ teams: TEAMS });
+    renderer.setScene(scn());
+    renderer.idle();
+    var bench = params.get('bench') ? { n: 0, acc: 0, max: 0, t0: 0 } : null;
+    function loop(now) {
+      var t0 = performance.now();
+      renderer.draw(now);
+      var dt = performance.now() - t0; drawAcc += dt; drawN++; frames++;
+      if (now - fpsT > 500) { fpsEl.textContent = 'draw ' + (drawAcc / drawN).toFixed(2) + ' ms  |  ' + Math.round(frames * 1000 / (now - fpsT)) + ' fps'; fpsT = now; frames = 0; drawAcc = 0; drawN = 0; }
+      if (bench) {                         // ?bench=1: average draw() cost of 200 idle frames after a 40-frame warm-up, into the title
+        bench.n++;
+        if (bench.n === 40) bench.t0 = now;
+        if (bench.n > 40) { bench.acc += dt; if (dt > bench.max) bench.max = dt; }
+        if (bench.n === 240) { document.title = 'bench draw avg=' + (bench.acc / 200).toFixed(2) + 'ms max=' + bench.max.toFixed(2) + 'ms fps=' + Math.round(200000 / (now - bench.t0)); return; }
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  }
+
+  function boot() {
+    var opts = { preserveDrawingBuffer: true };
+    if (camParam) { var c = camParam.split(',').map(Number); if (c.length === 6 && c.every(function (v) { return !isNaN(v); })) opts.debugCamera = c; }
+    try { renderer = window.Renderer(canvas, opts); }
+    catch (e) { window.onerror(String(e && e.message || e), 'render-b.js', 0, 0, e); return; }
+    if (sceneName) runFrozen(sceneName, frozenT);
+    else live();
+  }
+  if (window.Renderer) boot(); else window.addEventListener('renderer-ready', boot, { once: true });
+})();
+</script>
+<script type="module" src="render-b.js"></script>
+</body>
+</html>

@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1a12">
+<title>MY CRICKET</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="ball-dot"></span> MY CRICKET</div>
+    <div id="conn" class="conn is-off">Connecting…</div>
+  </header>
+
+  <!-- ============================== LOBBY ============================== -->
+  <section id="screen-lobby" class="screen">
+    <div class="card">
+      <h1>Cricket on your wifi</h1>
+      <p class="muted">Build an XI from real international players, win the toss, and play a full match against a friend on the same network. Phones, tablets and laptops all work.</p>
+
+      <label class="field-label">Your name
+        <input id="name" maxlength="16" autocomplete="nickname" placeholder="e.g. Rohit">
+      </label>
+
+      <div class="create-row">
+        <label class="field-label">Overs
+          <select id="overs">
+            <option value="1">1</option><option value="2" selected>2</option><option value="3">3</option><option value="5">5</option><option value="10">10</option>
+          </select>
+        </label>
+        <label class="field-label">Wickets
+          <select id="wickets">
+            <option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="5">5</option><option value="10">10</option>
+          </select>
+        </label>
+        <label class="field-label">Reviews
+          <select id="reviews">
+            <option value="0">0</option><option value="1" selected>1</option><option value="2">2</option>
+          </select>
+        </label>
+        <button id="create" class="btn primary">Create match</button>
+      </div>
+
+      <div class="join-row">
+        <input id="code" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false">
+        <button id="join" class="btn">Join by code</button>
+      </div>
+
+      <h2 class="section-title">Open matches</h2>
+      <div id="open-matches" class="matches"><p class="muted">No open matches yet. Create one, or ask your friend for their code.</p></div>
+
+      <div id="share" class="share hidden">
+        <div class="share-title">Friends on this wifi open</div>
+        <div id="share-urls"></div>
+      </div>
+
+      <details class="help">
+        <summary>How to play</summary>
+        <ul>
+          <li><b>Teams:</b> both players pick an XI of real cricketers within a budget of 300 credits. Better players cost more. You need enough bowlers to cover the overs. Batting order is the order of your list.</li>
+          <li><b>Toss:</b> the joining player calls. The winner bats or bowls first.</li>
+          <li><b>Bowling:</b> pick a bowler for each over (no bowler bowls two in a row). Choose line, length and pace, press <b>Bowl</b>, then <b>Release</b> when the marker is in the green. Spinners turn the ball after it pitches.</li>
+          <li><b>Batting:</b> choose Defend, Attack or Loft, then press Leg, Straight or Off as the ball reaches the bat. Good players have a more forgiving timing window.</li>
+          <li><b>Umpire and DRS:</b> close lbw and caught-behind calls go to the umpire, who can get them wrong. The side that disagrees can review within 12 seconds. Ball tracking or UltraEdge decides. A failed review is lost; umpire's call keeps it.</li>
+          <li><b>Keyboard:</b> bowling uses <kbd>←</kbd> <kbd>↑</kbd> <kbd>→</kbd> for line, <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> for length, <kbd>F</kbd> to switch pace and <kbd>Space</kbd> to bowl and release. Batting uses <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> for the shot type and <kbd>←</kbd> <kbd>↑</kbd> <kbd>→</kbd> to play. <kbd>R</kbd> reviews, <kbd>Enter</kbd> accepts.</li>
+          <li>Leaving mid-match forfeits it. A player who drops off the wifi has one minute to come back.</li>
+        </ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- ============================== TEAM BUILDER ============================== -->
+  <section id="screen-teams" class="screen hidden">
+    <div class="card teams-card">
+      <div class="teams-head">
+        <div>
+          <h1>Build your XI</h1>
+          <p class="muted" id="teams-hint">Pick 11 players within the budget.</p>
+        </div>
+        <div class="teams-status" id="opp-team-status"></div>
+      </div>
+      <div class="teams-bar">
+        <label class="field-label">Team name
+          <input id="team-name" maxlength="20" placeholder="e.g. Mumbai Mavericks">
+        </label>
+        <div class="budget">
+          <div class="budget-row"><span>Budget</span><b id="budget-txt">0 / 300</b></div>
+          <div class="budget-track"><div id="budget-fill" class="budget-fill"></div></div>
+          <div class="muted small" id="squad-count">0 of 11 picked</div>
+        </div>
+      </div>
+      <div class="teams-tabs">
+        <button type="button" class="tab on" data-tab="pool">Players</button>
+        <button type="button" class="tab" data-tab="xi">My XI <span id="xi-count" class="pill">0</span></button>
+      </div>
+      <div class="teams-panes">
+        <div class="pane" id="pane-pool">
+          <div class="filters">
+            <input id="pool-search" placeholder="Search players" autocomplete="off">
+            <select id="pool-country"><option value="">All countries</option></select>
+          </div>
+          <div class="chips" id="pool-roles">
+            <button type="button" data-role="" class="on">All</button><button type="button" data-role="bat">Batters</button><button type="button" data-role="bowl">Bowlers</button><button type="button" data-role="ar">All-rounders</button><button type="button" data-role="wk">Keepers</button>
+          </div>
+          <div class="pool-list" id="pool-list"></div>
+        </div>
+        <div class="pane hidden" id="pane-xi">
+          <p class="muted small">Batting order, top to bottom. Use the arrows to reorder.</p>
+          <div class="xi-list" id="xi-list"></div>
+        </div>
+      </div>
+      <div class="teams-actions">
+        <button type="button" id="team-auto" class="btn">Auto-pick for me</button>
+        <button type="button" id="team-lock" class="btn primary">Lock in my XI</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== MATCH ============================== -->
+  <section id="screen-game" class="screen hidden">
+    <div class="scorebug">
+      <div class="sb-top">
+        <span class="sb-team" id="sb-team"></span>
+        <b class="sb-score" id="sb-score"></b>
+        <span class="sb-overs" id="sb-overs"></span>
+        <span class="sb-drs" id="sb-drs" title="Reviews left"></span>
+      </div>
+      <div class="sb-mid">
+        <div class="sb-bats"><div class="sb-bat" id="sb-striker"></div><div class="sb-bat" id="sb-nonstriker"></div></div>
+        <div class="sb-bowl" id="sb-bowler"></div>
+      </div>
+      <div class="sb-bot">
+        <span id="sb-target"></span>
+        <span id="this-over" class="this-over"></span>
+      </div>
+    </div>
+
+    <div class="stage" id="stage">
+      <canvas id="field" aria-label="Cricket match"></canvas>
+      <div id="banner" class="banner hidden"></div>
+      <div id="drs" class="drs hidden">
+        <div class="drs-title" id="drs-title"></div>
+        <div class="drs-actions" id="drs-actions">
+          <button type="button" id="drs-review" class="btn danger">REVIEW</button>
+          <button type="button" id="drs-accept" class="btn">Accept</button>
+        </div>
+        <div class="drs-timer"><div id="drs-timer-fill" class="drs-timer-fill"></div></div>
+      </div>
+      <div id="cam-note" class="cam-note hidden"></div>
+    </div>
+
+    <div id="commentary" class="commentary">&nbsp;</div>
+
+    <div id="controls" class="controls">
+      <div id="ctl-bowler" class="ctl hidden">
+        <p class="ctl-title" id="bowler-title">Pick your bowler</p>
+        <div class="bowler-list" id="bowler-list"></div>
+      </div>
+
+      <div id="ctl-bowl" class="ctl hidden">
+        <div class="opt-row">
+          <div class="opt-group" data-opt="line">
+            <button type="button" data-v="leg">Leg</button><button type="button" data-v="middle" class="on">Middle</button><button type="button" data-v="off">Off</button>
+          </div>
+          <div class="opt-group" data-opt="length">
+            <button type="button" data-v="short">Short</button><button type="button" data-v="good" class="on">Good</button><button type="button" data-v="full">Full</button>
+          </div>
+          <div class="opt-group" data-opt="pace" id="pace-group">
+            <button type="button" data-v="fast" class="on">Fast</button><button type="button" data-v="slower">Slower</button>
+          </div>
+        </div>
+        <div class="meter" id="meter">
+          <div class="meter-track"><div class="meter-zone ok"></div><div class="meter-zone good"></div><div id="meter-marker" class="meter-marker"></div></div>
+        </div>
+        <button type="button" id="bowl" class="btn primary big">Bowl</button>
+      </div>
+
+      <div id="ctl-bat" class="ctl hidden">
+        <div class="opt-group center" data-opt="kind">
+          <button type="button" data-v="defend">Defend</button><button type="button" data-v="attack" class="on">Attack</button><button type="button" data-v="loft">Loft</button>
+        </div>
+        <div class="shots">
+          <button type="button" class="btn shot" data-side="left">◀ Leg</button>
+          <button type="button" class="btn shot" data-side="center">▲ Straight</button>
+          <button type="button" class="btn shot" data-side="right">Off ▶</button>
+        </div>
+      </div>
+
+      <div id="ctl-wait" class="ctl hidden"><p id="wait-text" class="wait-text"></p></div>
+    </div>
+
+    <div class="gamebar">
+      <span class="muted">Match <b id="match-code"></b></span>
+      <span id="opp-status" class="muted"></span>
+      <span class="gamebar-btns">
+        <button type="button" id="mute-btn" class="btn small" title="Sound on/off">🔊</button>
+        <button type="button" id="scorecard-btn" class="btn small">Scorecard</button>
+        <button type="button" id="leave" class="btn small">Leave</button>
+      </span>
+    </div>
+  </section>
+
+  <div id="overlay" class="overlay hidden"><div class="card overlay-card" id="overlay-card"></div></div>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="players.js"></script>
+<script src="sound.js"></script>
+<script type="module" src="render.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
